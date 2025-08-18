@@ -1,0 +1,13 @@
+main_ai:
+  provider: "ollama"
+  model: "llama3"
+  temperature: 0.2
+  max_tokens: 2000
+  stop: []
+
+judge_ai:
+  provider: "ollama"   # nebo "openai"
+  model: "qwen2.5:7b"  # příklad; použij co máš
+  temperature: 0.1
+  max_tokens: 1500
+  stop: []

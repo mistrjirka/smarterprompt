@@ -35,14 +35,14 @@ ui.markdown('# AI Verify Loop (NiceGUI)').classes('text-2xl font-bold')
 with ui.card().classes('w-full'):
     ui.markdown('### Configuration')
     with ui.grid(columns=4).classes('w-full gap-3'):
-        main_provider = ui.select(['openai', 'ollama'], value=cfg.get('main_ai', {}).get('provider', 'openai'), label='Main provider')
-        main_model = ui.input(label='Main model', value=cfg.get('main_ai', {}).get('model', 'gpt-4o-mini'))
+        main_provider = ui.select(['openai', 'ollama'], value=cfg.get('main_ai', {}).get('provider', 'ollama'), label='Main provider')
+        main_model = ui.input(label='Main model', value=cfg.get('main_ai', {}).get('model', 'gemma3n:latest'))
         main_temp = ui.number(label='Main temperature', value=cfg.get('main_ai', {}).get('temperature', 0.2), step=0.1, min=0, max=2)
         main_tokens = ui.number(label='Main max tokens', value=cfg.get('main_ai', {}).get('max_tokens', 2000), step=100, min=256, max=8192)
         main_stop = ui.input(label='Main stop tokens (comma-separated)', placeholder='</final>,<|end_of_reply|>')
 
         judge_provider = ui.select(['ollama', 'openai'], value=cfg.get('judge_ai', {}).get('provider', 'ollama'), label='Judge provider')
-        judge_model = ui.input(label='Judge model', value=cfg.get('judge_ai', {}).get('model', 'llama3'))
+        judge_model = ui.input(label='Judge model', value=cfg.get('judge_ai', {}).get('model', 'gemma3:4b'))
         judge_temp = ui.number(label='Judge temperature', value=cfg.get('judge_ai', {}).get('temperature', 0.1), step=0.1, min=0, max=2)
         judge_tokens = ui.number(label='Judge max tokens', value=cfg.get('judge_ai', {}).get('max_tokens', 1500), step=100, min=256, max=8192)
         judge_stop = ui.input(label='Judge stop tokens (comma-separated)', placeholder='</s>')
@@ -72,15 +72,17 @@ for b in (finalize_btn, export_btn, iterate_btn):
 
 with ui.card().classes('w-full'):
     ui.markdown('### Chat')
-    chat = ui.chat_message().classes('h-96')
+    with ui.scroll_area().classes('h-96 w-full p-4'):
+        chat_container = ui.column().classes('w-full gap-2')
 
 session_loop: ReviewLoop | None = None
 
 def add(role: str, text: str, meta: dict | None = None):
     name = {'you':'You','main':'Main AI','judge':'Judge AI','orchestrator':'Orchestrator'}.get(role, role)
-    chat.append({'name': name, 'text': text})
-    if meta:
-        chat.append({'name': 'Meta', 'text': str(meta)})
+    with chat_container:
+        ui.chat_message(text, name=name, sent=role=='you').props('dense')
+        if meta:
+            ui.chat_message(str(meta), name='Meta', sent=False).props('dense').classes('text-xs opacity-70')
 
 def parse_csv(s: str) -> List[str]:
     if not s: return []
@@ -88,7 +90,7 @@ def parse_csv(s: str) -> List[str]:
 
 async def on_start():
     global session_loop
-    chat.clear()
+    chat_container.clear()
     try:
         bundle = build_with_overrides(
             main_provider.value, main_model.value, main_temp.value, main_tokens.value, parse_csv(main_stop.value),

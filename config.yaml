@@ -1,13 +1,22 @@
 main_ai:
   provider: "ollama"
-  model: "llama3"
+  model: "deepseek-r1:3b"  # Thinking model - LangChain handles reasoning automatically
   temperature: 0.2
   max_tokens: 2000
   stop: []
 
 judge_ai:
-  provider: "ollama"   # nebo "openai"
-  model: "qwen2.5:7b"  # příklad; použij co máš
+  provider: "ollama"
+  model: "qwen2.5:7b"  # Fast model for evaluation
   temperature: 0.1
   max_tokens: 1500
   stop: []
+
+# OpenAI configuration for thinking models (o1-preview, o1-mini)
+openai:
+  base_url: "https://api.openai.com/v1"
+  organization: null  # Optional: set your OpenAI organization
+
+# Ollama configuration
+ollama:
+  base_url: "http://localhost:11434"

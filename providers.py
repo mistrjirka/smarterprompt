@@ -3,10 +3,11 @@ import httpx
 from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
 
-@dataclass
-class ProviderHTTP:
-    base_url: str
-    chat_endpoint: str
+# LangChain imports
+from langchain_openai import ChatOpenAI
+from langchain_ollama import ChatOllama
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.language_models.chat_models import BaseChatModel
 
 @dataclass
 class ChatRequest:
@@ -17,90 +18,97 @@ class ChatRequest:
     stop: Optional[List[str]] = None
     extra: Optional[Dict[str, Any]] = None
 
-class BaseProvider:
-    async def chat(self, req: ChatRequest) -> Tuple[str, Dict[str, Any]]:
-        raise NotImplementedError
-
-class OpenAIProvider(BaseProvider):
-    def __init__(self, cfg: ProviderHTTP, api_key: Optional[str] = None, organization: Optional[str] = None):
-        self.cfg = cfg
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.organization = organization or os.getenv("OPENAI_ORG")
-
-    async def chat(self, req: ChatRequest) -> Tuple[str, Dict[str, Any]]:
-        if not self.api_key:
-            raise RuntimeError("OPENAI_API_KEY not set.")
-        url = self.cfg.base_url.rstrip("/") + self.cfg.chat_endpoint
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        if self.organization:
-            headers["OpenAI-Organization"] = self.organization
-        payload = {
-            "model": req.model,
-            "messages": req.messages,
-            "temperature": req.temperature,
-            "max_tokens": req.max_tokens,
-        }
-        if req.stop:
-            payload["stop"] = req.stop
-        if req.extra:
-            payload.update(req.extra)
-
-        async with httpx.AsyncClient(timeout=90) as client:
-            r = await client.post(url, headers=headers, json=payload)
-            r.raise_for_status()
-            data = r.json()
-            text = data["choices"][0]["message"]["content"]
-            return text, data
-
-class OllamaProvider(BaseProvider):
-    def __init__(self, cfg: ProviderHTTP):
-        self.cfg = cfg
-
-    async def chat(self, req: ChatRequest) -> Tuple[str, Dict[str, Any]]:
-        url = self.cfg.base_url.rstrip("/") + self.cfg.chat_endpoint
-        payload = {
-            "model": req.model,
-            "messages": req.messages,
-            "stream": False,
-            "options": {
-                "temperature": req.temperature,
-                "num_predict": req.max_tokens,
-            }
-        }
-        if req.stop:
-            payload["options"]["stop"] = req.stop
-        if req.extra:
-            payload["options"].update(req.extra)
-
-        async with httpx.AsyncClient(timeout=180) as client:
-            r = await client.post(url, json=payload)
-            r.raise_for_status()
-            data = r.json()
-            msg = data.get("message") or {}
+class LangChainProvider:
+    """Wrapper for LangChain chat models to maintain compatibility with existing interface"""
+    
+    def __init__(self, chat_model: BaseChatModel):
+        self.chat_model = chat_model
+    
+    def _convert_messages(self, messages: List[Dict[str, str]]):
+        """Convert dict messages to LangChain message objects"""
+        converted = []
+        for msg in messages:
+            role = msg.get("role", "")
             content = msg.get("content", "")
-            return content, data
+            
+            if role == "system":
+                converted.append(SystemMessage(content=content))
+            elif role == "user":
+                converted.append(HumanMessage(content=content))
+            elif role == "assistant":
+                converted.append(AIMessage(content=content))
+            else:
+                # Default to human message
+                converted.append(HumanMessage(content=content))
+        
+        return converted
+    
+    async def chat(self, req: ChatRequest) -> Tuple[str, Dict[str, Any]]:
+        """Async chat method compatible with existing interface"""
+        try:
+            # Convert messages to LangChain format
+            lc_messages = self._convert_messages(req.messages)
+            
+            # LangChain automatically handles thinking models (o1, DeepSeek R1, etc.)
+            # No need for manual detection - let LangChain handle reasoning content
+            
+            # Use ainvoke for async call
+            response = await self.chat_model.ainvoke(lc_messages)
+            
+            # Extract content - LangChain automatically handles reasoning content stripping
+            content = response.content
+            
+            # Create response metadata similar to original format
+            metadata = {
+                "model": getattr(self.chat_model, 'model_name', req.model),
+                "usage": getattr(response, 'usage_metadata', {}),
+                "response_metadata": getattr(response, 'response_metadata', {})
+            }
+            
+            return content, metadata
+            
+        except Exception as e:
+            raise RuntimeError(f"LangChain chat error: {e}")
 
-def build_provider(name: str, http_cfg: dict) -> BaseProvider:
+def build_provider(name: str, http_cfg: dict, model: str, temperature: float = 0.2, 
+                  max_tokens: int = 1500, stop: Optional[List[str]] = None) -> LangChainProvider:
+    """Build a LangChain-based provider"""
     n = (name or "").lower()
+    
     if n == "openai":
-        return OpenAIProvider(
-            ProviderHTTP(
-                base_url=http_cfg.get("base_url", "https://api.openai.com/v1"),
-                chat_endpoint=http_cfg.get("chat_endpoint", "/chat/completions"),
-            ),
+        chat_model = ChatOpenAI(
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
             api_key=os.getenv("OPENAI_API_KEY"),
             organization=http_cfg.get("organization") or os.getenv("OPENAI_ORG"),
+            base_url=http_cfg.get("base_url"),
         )
+        
     elif n == "ollama":
-        base = os.getenv("OLLAMA_BASE_URL", http_cfg.get("base_url", "http://localhost:11434"))
-        return OllamaProvider(
-            ProviderHTTP(
-                base_url=base,
-                chat_endpoint=http_cfg.get("chat_endpoint", "/api/chat"),
-            )
+        base_url = os.getenv("OLLAMA_BASE_URL", http_cfg.get("base_url", "http://localhost:11434"))
+        chat_model = ChatOllama(
+            model=model,
+            temperature=temperature,
+            num_predict=max_tokens,
+            stop=stop,
+            base_url=base_url,
         )
     else:
         raise ValueError(f"Unknown provider: {name}")
+    
+    return LangChainProvider(chat_model)
+
+def get_ollama_models(base_url: str = "http://localhost:11434") -> List[str]:
+    """Get list of available Ollama models"""
+    try:
+        response = httpx.get(f"{base_url}/api/tags", timeout=5.0)
+        if response.status_code == 200:
+            data = response.json()
+            models = [model["name"] for model in data.get("models", [])]
+            return sorted(models)
+        else:
+            return ["llama3", "deepseek-r1:3b", "qwen2.5:7b"]  # fallback models
+    except Exception:
+        return ["llama3", "deepseek-r1:3b", "qwen2.5:7b"]  # fallback models

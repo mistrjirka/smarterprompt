@@ -16,6 +16,17 @@ cfg = load_config()  # config.yaml or example
 
 def build_with_overrides(main_provider: str, main_model: str, main_temp: float, main_max: int, main_stop: List[str],
                          judge_provider: str, judge_model: str, judge_temp: float, judge_max: int, judge_stop: List[str]) -> ProvidersBundle:
+            finally:
+                # Stop auto-updating status when done
+                stop_status_updates()
+                # Final status update
+                display_graph().0.1")
+PORT = int(os.getenv("PORT", "8888"))
+
+cfg = load_config()  # config.yaml or example
+
+def build_with_overrides(main_provider: str, main_model: str, main_temp: float, main_max: int, main_stop: List[str],
+                         judge_provider: str, judge_model: str, judge_temp: float, judge_max: int, judge_stop: List[str]) -> ProvidersBundle:
     base = load_config()
     base["main_ai"] = {
         "provider": main_provider, "model": main_model,
@@ -133,8 +144,6 @@ with ui.card().classes('w-full'):
 session_loop: ReviewLoop | None = None
 langgraph_loop: LangGraphReviewLoop | None = None
 current_bundle: ProvidersBundle | None = None
-auto_update_timer = None
-is_workflow_running = False
 
 def add(role: str, text: str, meta: dict | None = None):
     name = {'you':'You','main':'Main AI','judge':'Judge AI','orchestrator':'Orchestrator'}.get(role, role)
@@ -176,29 +185,6 @@ def add(role: str, text: str, meta: dict | None = None):
 def parse_csv(s: str) -> List[str]:
     if not s: return []
     return [x.strip() for x in s.split(',') if x.strip()]
-
-def start_auto_update():
-    """Start periodic status updates during workflow execution"""
-    global auto_update_timer, is_workflow_running
-    if auto_update_timer:
-        auto_update_timer.cancel()
-    
-    def update_during_workflow():
-        if is_workflow_running:
-            display_graph()
-            # Schedule next update
-            auto_update_timer = ui.timer(2.0, update_during_workflow)
-    
-    is_workflow_running = True
-    auto_update_timer = ui.timer(2.0, update_during_workflow)
-
-def stop_auto_update():
-    """Stop periodic status updates"""
-    global auto_update_timer, is_workflow_running
-    is_workflow_running = False
-    if auto_update_timer:
-        auto_update_timer.cancel()
-        auto_update_timer = None
 
 def display_graph():
     """Display the current workflow graph"""
@@ -284,51 +270,41 @@ async def on_start():
             return
         
         if workflow_type.value == 'langgraph':
-            # Start auto-updating status display
-            start_auto_update()
+            # Use LangGraph workflow
+            langgraph_loop = LangGraphReviewLoop(current_bundle)
             
-            # Use LangGraph workflow with real-time callbacks
-            def update_status():
-                """Update graph visualization in real-time"""
-                if is_workflow_running:
-                    display_graph()
+            # Set up real-time chat callback
+            langgraph_loop.set_chat_callback(add)
             
-            langgraph_loop = LangGraphReviewLoop(
-                current_bundle, 
-                message_callback=add,  # Real-time message display
-                status_callback=update_status  # Real-time status updates
-            )
             add('orchestrator', 'Starting LangGraph workflow...')
             
+            # Start auto-updating status
+            start_status_updates()
+            
             try:
-                # Run the complete workflow (messages will appear in real-time)
+                # Run the complete workflow - messages will appear in real-time via callback
                 final_state = await langgraph_loop.run_workflow(user_task)
                 add('orchestrator', f'Workflow completed after {final_state["iteration"]} iterations.')
             finally:
-                # Stop auto-updates when workflow finishes
-                stop_auto_update()
-                display_graph()  # Final update
+                # Stop auto-updating status when done
+                stop_status_updates()
+                # Final status update
+                display_graph()
             
         else:
-            # Use original workflow with auto-updates
-            start_auto_update()
-            
-            try:
-                session_loop = ReviewLoop(current_bundle)
-                add('orchestrator', 'Running Main AI…')
-                main_ans = await session_loop.run_main(user_task)
-                add('main', main_ans)
+            # Use original workflow
+            session_loop = ReviewLoop(current_bundle)
+            add('orchestrator', 'Running Main AI…')
+            main_ans = await session_loop.run_main(user_task)
+            add('main', main_ans)
 
-                add('orchestrator', 'Running Judge AI…')
-                judge_json = await session_loop.run_judge()
-                add('judge', str(judge_json), {'parsed': judge_json})
+            add('orchestrator', 'Running Judge AI…')
+            judge_json = await session_loop.run_judge()
+            add('judge', str(judge_json), {'parsed': judge_json})
 
-                add('orchestrator', 'Refining with Judge feedback…')
-                refined = await session_loop.refine()
-                add('main', refined, {'phase': 'refined'})
-            finally:
-                # Stop auto-updates when workflow finishes
-                stop_auto_update()
+            add('orchestrator', 'Refining with Judge feedback…')
+            refined = await session_loop.refine()
+            add('main', refined, {'phase': 'refined'})
 
         iterate_btn.enable()
         finalize_btn.enable()
@@ -436,6 +412,23 @@ iterate_btn.on('click', on_iterate)
 finalize_btn.on('click', on_finalize)
 export_btn.on('click', on_export)
 refresh_graph_btn.on('click', on_refresh_graph)
+
+# Auto-update timer for status
+status_timer = None
+
+def start_status_updates():
+    """Start periodic status updates"""
+    global status_timer
+    if status_timer:
+        status_timer.cancel()
+    status_timer = ui.timer(2.0, lambda: display_graph())  # Update every 2 seconds
+
+def stop_status_updates():
+    """Stop periodic status updates"""
+    global status_timer
+    if status_timer:
+        status_timer.cancel()
+        status_timer = None
 
 # Initialize graph display
 display_graph()
